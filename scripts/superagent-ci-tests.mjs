@@ -8,6 +8,20 @@ export const smokeTests = [
   'effects', 'execution', 'main-conversation', 'main-delegation', 'main-parallel-delegation', 'policy', 'storage',
 ].map(name => `test/${name}.test.mjs`)
 
+// Central runtime and shared fixture edits are exercised by the product smoke.
+// Reverse imports would select almost every integration suite, including slow
+// process/remote fixtures that belong to full release validation.
+const sharedModules = new Set([
+  'dev/native-mock.mjs',
+  'src/engine.ts',
+  'src/execution.ts',
+  'src/index.ts',
+  'src/main-conversation.ts',
+  'src/model.ts',
+  'src/native-sessions.ts',
+  'src/work-delegation.ts',
+])
+
 export function selectSuperagentTests(paths, tests) {
   const selected = new Set(smokeTests.filter(name => tests.has(name)))
   for (const raw of paths) {
@@ -21,10 +35,10 @@ export function selectSuperagentTests(paths, tests) {
     if (local === 'scripts/test.mjs') selected.add('test/test-runner.test.mjs')
     // The public index is a barrel used by nearly every integration fixture. Its
     // import alone cannot identify a targeted test, so it keeps the smoke set.
-    const imported = local.startsWith('src/') && local !== 'src/index.ts'
+    const imported = local.startsWith('src/') && !sharedModules.has(local)
       ? `../dist/${local.slice(4).replace(/\.ts$/u, '.js')}`
       : local.startsWith('test/') ? `./${local.slice(5)}`
-        : local.startsWith('dev/') ? `../${local}` : undefined
+        : local.startsWith('dev/') && !sharedModules.has(local) ? `../${local}` : undefined
     if (!imported) continue
     for (const [file, source] of tests) {
       if (source.includes(`'${imported}'`) || source.includes(`"${imported}"`)) selected.add(file)
