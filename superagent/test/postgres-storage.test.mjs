@@ -36,7 +36,7 @@ test('PostgreSQL preserves Main identity, deduplicates messages and isolates ano
   assert.deepEqual((await engine.listTickets()).items, [])
 })
 
-test('PostgreSQL persists a Main WorkBrief, its single Ticket receipt and the verified local Outcome', { timeout: 60000 }, async t => {
+test('PostgreSQL persists a split Main WorkPlan, every Ticket receipt and verified local Outcome', { timeout: 60000 }, async t => {
   const { storage } = await newStorage()
   const root = join(directory, 'main-workspace')
   await mkdir(root, { recursive: true })
@@ -50,19 +50,23 @@ test('PostgreSQL persists a Main WorkBrief, its single Ticket receipt and the ve
       const user = options.messages.filter(message => message.role === 'user').at(-1)
       const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
       if (text.startsWith('[Work update]')) { yield* textResponse('The Router work update is recorded.'); return }
-      if (text === 'Create one checked file.' && completedToolCount(options) === 0) yield* toolResponse('delegate_work', {
-        goal: 'Create postgres-note.txt containing the authorized text.',
-        constraints: 'Write only inside the configured workspace.',
-        acceptanceCriteria: 'Read back the exact file contents before reporting success.',
+      if (text === 'Create two checked files independently.' && completedToolCount(options) === 0) yield* toolResponse('delegate_work', {
+        items: [
+          { goal: 'Create postgres-alpha.txt.', constraints: 'Write only inside the configured workspace.', acceptanceCriteria: 'Read back postgres-alpha.txt before success.' },
+          { goal: 'Create postgres-beta.txt.', constraints: 'Write only inside the configured workspace.', acceptanceCriteria: 'Read back postgres-beta.txt before success.' },
+        ],
       })
       else yield* textResponse('The local work result is available.')
       return
     }
     if (options.model === 'router') { yield* routerResponse(options); return }
+    const user = options.messages.filter(message => message.role === 'user').at(-1)
+    const text = user.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    const file = text.includes('postgres-alpha') ? 'postgres-alpha.txt' : 'postgres-beta.txt'
     const plan = [
-      ['write_file', { path: 'postgres-note.txt', text: 'postgres durable result\n' }],
-      ['read_file', { path: 'postgres-note.txt' }],
-      ['report_ready', { result: 'Created postgres-note.txt.', evidence: 'The Worker read the authorized contents.', artifacts: 'postgres-note.txt' }],
+      ['write_file', { path: file, text: `${file} durable result\n` }],
+      ['read_file', { path: file }],
+      ['report_ready', { result: `Created ${file}.`, evidence: `The Worker read ${file}.`, artifacts: file }],
     ][completedToolCount(options)]
     if (plan) yield* toolResponse(plan[0], plan[1], `postgres-worker-${completedToolCount(options)}`)
     else yield* textResponse('No verified result was recorded.')
@@ -88,27 +92,32 @@ test('PostgreSQL persists a Main WorkBrief, its single Ticket receipt and the ve
   t.after(close)
 
   await open()
-  const command = { instanceId: 'postgres-work', commandId: 'postgres-delegate', text: 'Create one checked file.' }
+  const command = { instanceId: 'postgres-work', commandId: 'postgres-delegate', text: 'Create two checked files independently.' }
   await engine.sendMainMessage(command)
   let history
   for (let attempt = 0; attempt < 500; attempt++) {
     history = await engine.getMainConversation({ instanceId: 'postgres-work' })
-    if (history.works[0]?.status === 'success') break
+    if (history.works.length === 2 && history.works.every(work => work.status === 'success')) break
     await new Promise(resolve => setTimeout(resolve, 20))
   }
-  assert.equal(history.works.length, 1)
-  assert.equal(history.works[0].receipt.status, 'accepted')
-  assert.equal(history.works[0].outcome.summary, 'Created postgres-note.txt.')
+  assert.equal(history.works.length, 2)
+  assert.equal(history.works.every(work => work.receipt.status === 'accepted'), true)
+  assert.deepEqual(history.works.map(work => work.outcome.summary).sort(), ['Created postgres-alpha.txt.', 'Created postgres-beta.txt.'])
   assert.equal(roles.includes('worker'), true)
-  assert.equal((await engine.listTickets()).items.length, 1)
+  assert.equal((await engine.listTickets()).items.length, 2)
+  const plan = await engine.getMainWorkPlan({ instanceId: 'postgres-work', workBriefId: history.works[0].brief.id })
+  assert.equal(plan.items.length, 2)
+  assert.equal(plan.status, 'accepted')
+  const identities = plan.items.map(item => [item.id, item.ticketId])
 
   await close()
   await open()
   await engine.sendMainMessage(command)
   const restored = await engine.getMainConversation({ instanceId: 'postgres-work' })
-  assert.equal(restored.works.length, 1)
-  assert.equal(restored.works[0].outcome.reportId, history.works[0].outcome.reportId)
-  assert.equal((await engine.listTickets()).items.length, 1)
+  assert.equal(restored.works.length, 2)
+  assert.deepEqual(restored.works.map(work => work.outcome.reportId).sort(), history.works.map(work => work.outcome.reportId).sort())
+  assert.deepEqual((await engine.getMainWorkPlan({ instanceId: 'postgres-work', workBriefId: plan.workBriefId })).items.map(item => [item.id, item.ticketId]), identities)
+  assert.equal((await engine.listTickets()).items.length, 2)
 })
 
 after(async () => {

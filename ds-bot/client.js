@@ -20768,7 +20768,7 @@ function applyProduct(ctx) {
             (0, import_react53.createElement)(ChatRows, { items: [{ kind: message.role === "main" ? "bot" : "user", text: message.text, time: message.createdAt }], sessionId: "main", roster: emptyRoster, actions: {} }),
             message.status === "failed" ? (0, import_react53.createElement)("p", { className: "bt-main-error", role: "status" }, t("Main could not finish this reply. Your message is saved.")) : null
           )),
-          state.works.map((work) => (0, import_react53.createElement)(MainWorkCard, { key: work.brief.id, work })),
+          state.works.map((work) => (0, import_react53.createElement)(MainWorkCard, { key: work.brief.workItemId ?? work.brief.id, work })),
           busy ? (0, import_react53.createElement)("p", { className: "bt-main-status", role: "status" }, t("Main is replying…")) : null,
           (0, import_react53.createElement)("div", { ref: bottom })
         )

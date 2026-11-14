@@ -24,5 +24,6 @@ test('the real ds-superagent profile boots Main and verifies delegated local wor
   }
   assert.equal(result.messages, 4)
   assert.equal(result.localWorkStatus, 'success')
+  assert.equal(result.localWorkItems, 2)
   assert.equal(result.nativeSessionAccessDenied, true)
 })

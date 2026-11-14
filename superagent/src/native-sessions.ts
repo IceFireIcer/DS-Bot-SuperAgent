@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import type { Agent, AgentHandle, AgentOptions } from '@deepseek-ai/dsh-agent'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed, SessionId, SessionLogOffset, type SessionEvent } from '@deepseek-ai/dsh-session'
-import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ParameterSchemaSpec, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { CoreError, type IntakeAssessment } from './model.js'
 import type { RoleModel } from './config.js'
 import type { RoleProfile } from './config.js'
@@ -11,9 +11,9 @@ import type { RoleProfile } from './config.js'
 export interface NativeTool {
   name: string
   description: string
-  parameters: Record<string, { type: 'string'; required: true }>
+  parameters: ParameterSchemaSpec
   /** `agent` is the exact caller DSH reports for this call, used to parent a delegated child Agent. */
-  execute(args: Record<string, string>, signal: AbortSignal, agent?: Agent): Promise<string>
+  execute(args: Record<string, any>, signal: AbortSignal, agent?: Agent): Promise<string>
 }
 export interface NativeSessionRequest { sessionId: string; role: 'main' | 'router' | 'worker'; text: string; tools: NativeTool[]; cwd?: string; signal?: AbortSignal; onDelivered?: () => Promise<void>; coalesce?: boolean; messageId?: string; onMessagePersisted?: (seq: number) => Promise<void>; instructions?: string; skills?: string[]; profile?: RoleProfile }
 export interface NativeSessionsOptions { main?: AgentOptions; router: AgentOptions; worker: AgentOptions; timeoutMs?: number }

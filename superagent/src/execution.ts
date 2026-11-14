@@ -1396,7 +1396,8 @@ export class Execution {
           if (!verified) throw new CoreError('VERIFICATION_REQUIRED', hasCommand
             ? 'A ready report needs a successful configured verification command after the last file write.'
             : 'This Environment has no command capability; read or search the written file successfully before the ready report.')
-          const paths = [...new Set((args.artifacts ?? '').split('\n').map(path => path.trim()).filter(Boolean))]
+          const rawArtifacts = typeof args.artifacts === 'string' ? args.artifacts : ''
+          const paths = [...new Set(rawArtifacts.split('\n').map((path: string) => path.trim()).filter(Boolean))]
           if (!paths.length || paths.length > 10) throw new CoreError('INVALID_REPORT', 'Provide one to ten newline-separated relative artifact paths.')
           artifacts.splice(0)
           for (const path of paths) artifacts.push(await bound.artifact(path, signal))

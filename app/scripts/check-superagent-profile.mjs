@@ -61,10 +61,13 @@ try {
           return
         }
         const toolCalls = request.messages.slice(request.messages.lastIndexOf(user) + 1).filter(message => message.role === 'tool').length
-        if (text === 'Create and verify the requested local note.' && toolCalls === 0) {
-          yield* toolResponse('delegate_work', { goal: 'Create profile-note.txt with the exact accepted text.',
-            constraints: 'Only write inside the configured local workspace.',
-            acceptanceCriteria: 'Read the file and confirm its exact contents.' })
+        if (text === 'Create and verify two local notes independently.' && toolCalls === 0) {
+          yield* toolResponse('delegate_work', { items: [
+            { goal: 'Create profile-alpha.txt with the exact accepted text.', constraints: 'Only write inside the configured local workspace.',
+              acceptanceCriteria: 'Read profile-alpha.txt and confirm its exact contents.' },
+            { goal: 'Create profile-beta.txt with the exact accepted text.', constraints: 'Only write inside the configured local workspace.',
+              acceptanceCriteria: 'Read profile-beta.txt and confirm its exact contents.' },
+          ] })
         } else yield* textResponse('The independent Main answered through the public DSH loop.')
         return
       }
@@ -75,10 +78,18 @@ try {
       if (request.model !== 'worker') throw new Error(`Unexpected role route ${request.model}.`)
       const userIndex = request.messages.findLastIndex(message => message.role === 'user')
       const completed = request.messages.slice(userIndex + 1).filter(message => message.role === 'tool').length
+      const userText = request.messages.filter(message => message.role === 'user')
+        .flatMap(message => message.content?.filter(block => block.type === 'text').map(block => block.text) ?? [])
+        .findLast(text => text.includes('Goal:\n') && text.includes('profile-')) ?? ''
+      if (!userText) {
+        yield* textResponse('No verified result was recorded.')
+        return
+      }
+      const file = userText.includes('profile-alpha') ? 'profile-alpha.txt' : 'profile-beta.txt'
       const plan = [
-        ['write_file', { path: 'profile-note.txt', text: 'written and verified\n' }],
-        ['read_file', { path: 'profile-note.txt' }],
-        ['report_ready', { result: 'Created profile-note.txt.', evidence: 'Read back the exact accepted text.', artifacts: 'profile-note.txt' }],
+        ['write_file', { path: file, text: `${file} written and verified\n` }],
+        ['read_file', { path: file }],
+        ['report_ready', { result: `Created ${file}.`, evidence: `Read back the exact accepted text from ${file}.`, artifacts: file }],
       ][completed]
       if (plan) yield* toolResponse(plan[0], plan[1], `profile-worker-${completed}`)
       else yield* textResponse('No result was recorded.')
@@ -94,22 +105,24 @@ try {
   await ctx.superagentProduct.dispatch('send', { instanceId: binding.instanceId, commandId: 'profile-smoke', text: 'Hello Main.' })
   let history = await ctx.superagentProduct.dispatch('history', { instanceId: binding.instanceId })
   if (history.messages.length !== 2 || history.messages[1].role !== 'main') throw new Error('Main did not produce a durable reply.')
-  await ctx.superagentProduct.dispatch('send', { instanceId: binding.instanceId, commandId: 'profile-delegation', text: 'Create and verify the requested local note.' })
+  await ctx.superagentProduct.dispatch('send', { instanceId: binding.instanceId, commandId: 'profile-delegation', text: 'Create and verify two local notes independently.' })
   const deadline = Date.now() + 30000
   while (Date.now() < deadline) {
     history = await ctx.superagentProduct.dispatch('history', { instanceId: binding.instanceId })
-    if (history.works?.some(work => work.status === 'success')) break
+    if (history.works?.length === 2 && history.works.every(work => work.status === 'success')) break
     await sleep(50)
   }
-  const work = history.works?.[0]
-  assert.equal(work?.receipt.status, 'accepted')
-  assert.equal(work?.status, 'success', JSON.stringify({ works: history.works, modelCalls }, null, 2))
-  assert.equal(work?.outcome.summary, 'Created profile-note.txt.')
-  assert.match(work.outcome.evidence, /exact accepted text/u)
-  assert.deepEqual(work.outcome.artifacts.map(artifact => artifact.path), ['profile-note.txt'])
-  assert.equal(await readFile(join(process.env.DS_BOT_WORKSPACE, 'profile-note.txt'), 'utf8'), 'written and verified\n')
+  assert.equal(history.works?.length, 2, JSON.stringify({ messages: history.messages, works: history.works, modelCalls }, null, 2))
+  assert.equal(history.works.every(work => work.receipt.status === 'accepted' && work.status === 'success'), true)
+  assert.equal(new Set(history.works.map(work => work.brief.workItemId)).size, 2)
+  assert.equal(new Set(history.works.map(work => work.brief.sourceEventId)).size, 1)
+  assert.deepEqual(history.works.map(work => work.outcome.artifacts[0].path).sort(), ['profile-alpha.txt', 'profile-beta.txt'], JSON.stringify({ works: history.works, modelCalls }, null, 2))
+  assert.equal(await readFile(join(process.env.DS_BOT_WORKSPACE, 'profile-alpha.txt'), 'utf8'), 'profile-alpha.txt written and verified\n')
+  assert.equal(await readFile(join(process.env.DS_BOT_WORKSPACE, 'profile-beta.txt'), 'utf8'), 'profile-beta.txt written and verified\n')
   if (ctx.get('botExecutionAdapter') !== undefined) throw new Error('The old execution adapter must not mount in the product profile.')
-  console.log(JSON.stringify({ profile: SUPERAGENT_PROFILE, home, services, messages: history.messages.filter(message => !message.id.startsWith('reply:main-update:')).length, localWorkStatus: work.status, nativeSessionAccessDenied: true }))
+  console.log(JSON.stringify({ profile: SUPERAGENT_PROFILE, home, services, messages: history.messages.filter(message => !message.id.startsWith('reply:main-update:')).length,
+    localWorkStatus: history.works.every(work => work.status === 'success') ? 'success' : 'failed', localWorkItems: history.works.length,
+    nativeSessionAccessDenied: true }))
 } finally {
   try { await application?.shutdown?.shutdown?.(0) } catch {}
   rmSync(home, { recursive: true, force: true })

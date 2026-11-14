@@ -100,7 +100,7 @@ export function applyProduct(ctx) {
           state.messages.map(message => h('div', { key: message.id },
             h(ChatRows, { items: [{ kind: message.role === 'main' ? 'bot' : 'user', text: message.text, time: message.createdAt }], sessionId: 'main', roster: emptyRoster, actions: {} }),
             message.status === 'failed' ? h('p', { className: 'bt-main-error', role: 'status' }, t('Main could not finish this reply. Your message is saved.')) : null)),
-          state.works.map(work => h(MainWorkCard, { key: work.brief.id, work })),
+          state.works.map(work => h(MainWorkCard, { key: work.brief.workItemId ?? work.brief.id, work })),
           busy ? h('p', { className: 'bt-main-status', role: 'status' }, t('Main is replying…')) : null,
           h('div', { ref: bottom }))),
       h(MainComposer, { onSend: send, busy: sending || !state.binding, error: sendError ?? state.error }))

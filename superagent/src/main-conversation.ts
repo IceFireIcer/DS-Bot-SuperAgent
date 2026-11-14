@@ -4,7 +4,7 @@ import { CoreError, identifier, type DesktopSource } from './model.js'
 import type { NativeSessions, NativeTool } from './native-sessions.js'
 import type { AsyncTx, Storage } from './storage.js'
 import type { RoleProfile } from './config.js'
-import type { MainWorkCard, MainWorkNotification, WorkDelegation } from './work-delegation.js'
+import type { MainWorkCard, MainWorkIntent, MainWorkNotification, WorkDelegation } from './work-delegation.js'
 
 export interface MainBinding { instanceId: string; mainId: string; mainSessionId: string; routerSessionId: string }
 interface MainState extends MainBinding { sequence: number; activeCommand?: string }
@@ -94,22 +94,47 @@ export class MainConversation {
 
   private tools(binding: MainBinding, command: MainCommand, originalUserText: string, configurationRevision: number): NativeTool[] {
     return [
-      { name: 'delegate_work', description: 'Create one durable local work brief. State one clear goal, strict constraints and observable acceptance criteria. The Router will create a Ticket; this tool does not mean the Worker has started or completed.',
-        parameters: { goal: { type: 'string', required: true }, constraints: { type: 'string', required: true }, acceptanceCriteria: { type: 'string', required: true } },
+      { name: 'delegate_work', description: 'Create one durable local WorkBrief for one to four independent items. Give every item a clear goal, strict constraints and observable acceptance criteria. The Router decides and establishes the Tickets; this tool does not mean any Worker started or completed.',
+        parameters: {
+          items: {
+            type: 'array',
+            items: {
+              type: 'object', additionalProperties: false,
+              properties: {
+                goal: { type: 'string', required: true },
+                constraints: { type: 'string' },
+                acceptanceCriteria: { type: 'string' },
+              },
+            },
+          },
+          goal: { type: 'string' },
+          constraints: { type: 'string' },
+          acceptanceCriteria: { type: 'string' },
+        },
         execute: async args => {
           const work = this.work?.()
           if (!work) return JSON.stringify({ status: 'rejected', code: 'DELEGATION_UNAVAILABLE', ticketCreated: false, message: 'No authorized local workspace is configured; no work was started.' })
+          const items = Array.isArray(args.items) ? args.items.map(item => {
+            const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+            return {
+              goal: value.goal,
+              constraints: value.constraints ?? args.constraints,
+              acceptanceCriteria: value.acceptanceCriteria ?? args.acceptanceCriteria,
+            }
+          }) as MainWorkIntent[] : undefined
           const brief = await work.create({ commandId: `main-work:${command.messageId}`, mainId: binding.mainId,
             mainSessionId: binding.mainSessionId, routerSessionId: binding.routerSessionId, mainMessageId: command.messageId,
-            originalUserText, goal: args.goal ?? '', constraints: args.constraints ?? '', acceptanceCriteria: args.acceptanceCriteria ?? '', configurationRevision })
-          const card = await work.query(binding.mainId, brief.id)
-          return JSON.stringify({ ...card.receipt, ticketCreated: card.receipt.ticketId !== undefined })
+            originalUserText, ...(items ? { items } : { goal: args.goal ?? '', constraints: args.constraints ?? '', acceptanceCriteria: args.acceptanceCriteria ?? '' }),
+            configurationRevision })
+          return JSON.stringify(await work.query(binding.mainId, { workBriefId: brief.id }))
         } },
       { name: 'query_work', description: 'Read a bounded status, receipt and verified result for a work item already visible in the Main conversation.',
-        parameters: { workBriefId: { type: 'string', required: true } },
+        parameters: { workBriefId: { type: 'string' }, workItemId: { type: 'string' } },
         execute: async args => {
           const work = this.work?.()
-          return work ? JSON.stringify(await work.query(binding.mainId, args.workBriefId ?? ''))
+          return work ? JSON.stringify(await work.query(binding.mainId, {
+            ...(args.workBriefId ? { workBriefId: args.workBriefId } : {}), ...(args.workItemId ? { workItemId: args.workItemId } : {}),
+          }))
             : JSON.stringify({ status: 'unavailable', code: 'DELEGATION_UNAVAILABLE', ticketCreated: false })
         } },
     ]

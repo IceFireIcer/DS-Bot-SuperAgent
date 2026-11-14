@@ -51,7 +51,7 @@ test('Main delegates one durable local brief and reports only the Worker result 
       return
     }
     if (options.model === 'router') { yield* routerResponse(options); return }
-    if (lastUserText(options).includes('Try one incomplete local work item.')) {
+    if (lastUserText(options).includes('Inspect the sample')) {
       yield* textResponse('I inspected the request but did not verify or complete it.')
       return
     }

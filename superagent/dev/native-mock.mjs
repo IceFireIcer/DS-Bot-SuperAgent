@@ -60,6 +60,10 @@ export function* routerResponse(options) {
   if (tool.name.startsWith('deliver_result')) {
     const report = JSON.parse(item.slice('Ready report:'.length))
     yield* toolResponse(tool.name, { reportId: report.id }, `router-${completed}`)
+  } else if (tool.name === 'establish_work_plan') {
+    const brief = JSON.parse(item.slice(item.indexOf('{')).trim())
+    const items = brief.requestedItems ?? [{ goal: brief.goal, constraints: brief.constraints, acceptanceCriteria: brief.acceptanceCriteria }]
+    yield* toolResponse(tool.name, { items }, `router-${completed}`)
   } else yield* toolResponse(tool.name, {}, `router-${completed}`)
 }
 

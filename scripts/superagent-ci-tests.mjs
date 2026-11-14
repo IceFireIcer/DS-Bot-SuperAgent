@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 // Daily CI exercises the product loop without replaying every database/process fixture.
 // This is a smoke selection, not an assertion that indirect regressions are covered.
 export const smokeTests = [
-  'effects', 'execution', 'main-conversation', 'main-delegation', 'policy', 'storage',
+  'effects', 'execution', 'main-conversation', 'main-delegation', 'main-parallel-delegation', 'policy', 'storage',
 ].map(name => `test/${name}.test.mjs`)
 
 export function selectSuperagentTests(paths, tests) {

@@ -38,7 +38,7 @@ import { compareWorkCopy, WorkCopyUnsupported, workCopyGaps,
   uniqueBlockers, type HandoffCopyView, type WorkCopyBlocker, type WorkCopyComparison, type WorkCopyFile, type WorkCopySnapshot } from './work-copy.js'
 import type { ActivationGate } from './activation.js'
 import { MainConversation, type MainAddress, type MainSend } from './main-conversation.js'
-import { WorkDelegation, type MainWorkCard } from './work-delegation.js'
+import { WorkDelegation, type MainWorkCard, type MainWorkItem } from './work-delegation.js'
 
 interface StoredPolicy { revision: number; configuration: Omit<IntakePolicy, 'assess'>; origin: 'bootstrap' | 'manual' | 'sync'; sourceRevision?: string; updatedAt: number }
 interface ProcessingState { paused: boolean; revision: number; updatedAt: number }
@@ -285,12 +285,7 @@ export class Engine {
       && candidate.config.allowedActorIds.includes(source.actorId) && candidate.config.permissions.includes('read') && candidate.config.permissions.includes('write'))
     if (sessions?.mainRoute && this.execution && environment) {
       this.workDelegation = new WorkDelegation({ storage, instanceId, source, sessions, effects: this.effects, environmentId: environment.config.id,
-        createTicket: async brief => {
-          const receipt = await this.submit({ commandId: `main-work-ticket:${brief.id}`, eventId: `main-work-source:${brief.id}`,
-            text: `Original Main request:\n${brief.originalUserText}\n\nWork goal:\n${brief.goal}\n\nConstraints:\n${brief.constraints}\n\nAcceptance criteria:\n${brief.acceptanceCriteria}`,
-            execution: 'local', environmentId: brief.environmentId, target: 'local-only' })
-          return { ticketId: receipt.ticketId }
-        },
+        createTicket: (brief, item) => this.createDelegatedWorkItem(brief, item),
         readTicket: async ticketId => {
           const conversation = await this.conversation(ticketId)
           const report = conversation.reports[0]
@@ -501,7 +496,40 @@ export class Engine {
     })
   }
 
-  private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string, options: { strength?: 'explicit' | 'inferred'; policyVersion?: string } = {}): Promise<Receipt> {
+  private async createDelegatedWorkItem(brief: import('./work-delegation.js').MainWorkBrief, item: MainWorkItem): Promise<Receipt> {
+    await this.ensurePolicy()
+    if (this.processingPaused) throw new CoreError('PROCESSING_PAUSED', 'New work cannot be accepted while processing is paused.')
+    await this.assertActivationCurrent()
+    await this.assertHostAdmission()
+    if (!brief.sourceEventId) throw new CoreError('INCOMPLETE_STATE', 'The Main WorkBrief source event is missing.')
+    identifier(brief.id, 'workBriefId'); identifier(item.id, 'workItemId'); identifier(brief.sourceEventId, 'sourceEventId')
+    if (brief.instanceId !== this.instanceId || item.workBriefId !== brief.id) throw new CoreError('INSTANCE_MISMATCH', 'The delegated item does not belong to this Main WorkBrief.')
+    if (!this.source.allowedActorIds.includes(this.source.actorId)) throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This desktop actor cannot establish delegated work.')
+    const source: Source = { kind: this.source.kind ?? 'desktop', sourceInstanceId: this.source.sourceInstanceId, actorId: this.source.actorId }
+    const triggerId = JSON.stringify([this.instanceId, source.kind, source.sourceInstanceId, brief.sourceEventId, item.id, 'main-work-item'])
+    const text = `Original Main request:\n${brief.originalUserText}\n\nGoal:\n${item.goal}\n\nConstraints:\n${item.constraints}\n\nAcceptance criteria:\n${item.acceptanceCriteria}`
+    const trigger: Work['trigger'] = { id: triggerId, instanceId: this.instanceId, source, eventId: brief.sourceEventId,
+      text, environmentId: brief.environmentId, target: 'local-only', targetSource: 'ticket' }
+    const commandId = `main-work-ticket:${brief.id}:${item.id}`
+    const fingerprint = `sha256:main-work-item-v1:${createHash('sha256').update(canonicalJson([
+      this.instanceId, source, brief.sourceEventId, item.id, item.goal, item.constraints, item.acceptanceCriteria, brief.environmentId,
+    ])).digest('hex')}`
+    return commandTransaction(this.storage, this.instanceId, async transaction => {
+      await this.sourceEvents.requireDirectMode(transaction)
+      const existing = await transaction.get<CommandRecord>('command', commandId)
+      if (existing) return this.replay(existing, fingerprint, 'command')
+      await this.assertHostAdmissionIn(transaction)
+      return this.accept(transaction, commandId, trigger, fingerprint, { mandateScope: item.goal,
+        linkTicket: async (tx, receipt) => {
+          await tx.insert('work-ticket', receipt.ticketId, { workBriefId: brief.id, workItemId: item.id, ticketId: receipt.ticketId })
+          await tx.insert('work-item-ticket', item.id, { workBriefId: brief.id, workItemId: item.id, ticketId: receipt.ticketId })
+        } })
+    })
+  }
+
+
+  private async accept(tx: AsyncTx, commandId: string, trigger: Work['trigger'], fingerprint: string,
+    options: { strength?: 'explicit' | 'inferred'; policyVersion?: string; mandateScope?: string; linkTicket?: (tx: AsyncTx, receipt: Receipt) => Promise<void> } = {}): Promise<Receipt> {
     const triggerId = trigger.id
     const source = trigger.source
     await this.assertActivationIn(tx)
@@ -526,7 +554,7 @@ export class Engine {
     const work: Work = {
       trigger: persistedTrigger,
       decision: { id: decisionId, instanceId: this.instanceId, triggerId, outcome: 'accept', policyVersion: options.policyVersion ?? 'desktop-explicit-v1' },
-      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind,
+      mandate: { id: mandateId, instanceId: this.instanceId, decisionId, scope: options.mandateScope ?? trigger.text, strength: options.strength ?? 'explicit', environment: environmentKind,
         ...(persistedTrigger.capabilities?.length ? { capabilities: [...persistedTrigger.capabilities] } : {}) },
       ticket: { id: ticketId, instanceId: this.instanceId, mandateId, triggerId, state: 'open', directionVersion: 1 },
       intent: { id: randomUUID(), instanceId: this.instanceId, ticketId, state: 'pending', reason: this.execution ? 'router-pending' : 'worker-not-enabled', environment: environmentKind },
@@ -540,6 +568,7 @@ export class Engine {
     await this.inputs.subscribe(tx, ticketId, persistedTrigger)
     await tx.insert('event', triggerId, { fingerprint, receipt })
     await tx.insert('command', commandId, { fingerprint, receipt })
+    await options.linkTicket?.(tx, receipt)
     await this.effects.enqueue(tx, { key: ticketId, stream: 'notice', scope: 'router', payload: { type: 'request-accepted', ticketId, triggerId } })
     const deliveryId = `${ticketId}:acknowledgement`
     const destination = { ...source, eventId: trigger.eventId, ...(trigger.threadId ? { threadId: trigger.threadId } : {}) }
@@ -1241,6 +1270,14 @@ export class Engine {
     return { ...page, works: this.workDelegation ? await this.workDelegation.list(page.mainId) : [] as MainWorkCard[] }
   }
 
+  async getMainWorkPlan(request: MainAddress & { workBriefId: string }) {
+    if (!this.workDelegation) throw new CoreError('DELEGATION_UNAVAILABLE', 'No authorized local workspace is configured.')
+    if (request.instanceId !== this.instanceId || !this.source.allowedActorIds.includes(this.source.actorId)) {
+      throw new CoreError('SOURCE_NOT_AUTHORIZED', 'This WorkBrief is outside the authorized Main Instance.')
+    }
+    const binding = await this.main.open({ instanceId: request.instanceId })
+    return this.workDelegation.plan(binding.mainId, request.workBriefId)
+  }
   async getRoleConfig(): Promise<RoleConfigView> {
     const config = await this.roleConfig.ensure()
     this.roleConfigRevision = config.revision
@@ -2297,7 +2334,7 @@ export class Engine {
     const policy = await tx.get<StoredPolicy>('policy-state', this.policyKey())
     const original = work.trigger.threadId ? await tx.get<SourceEvent>('source-event', work.trigger.id) : undefined
     const allowed = policy?.configuration.allowedRequesterIds ?? this.source.intake?.allowedRequesterIds ?? this.source.allowedActorIds
-    if (!allowed.includes(original?.authorId ?? this.source.actorId) || work.mandate.scope !== work.trigger.text || work.decision.outcome !== 'accept') {
+    if (!allowed.includes(original?.authorId ?? this.source.actorId) || work.decision.outcome !== 'accept') {
       throw new CoreError('SOURCE_NOT_AUTHORIZED', 'The original work authorization is no longer valid for association.')
     }
     return work
