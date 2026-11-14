@@ -210,7 +210,7 @@ test('a partial work-plan commit survives restart and fills only the missing ite
     main: { provider: 'mock', model: 'main' }, router: { provider: 'mock', model: 'router' }, worker: { provider: 'mock', model: 'worker' },
   })
   const source = { sourceInstanceId: 'product-desktop', actorId: 'alice', allowedActorIds: ['alice'] }
-  let engine = new Engine(interrupted, 'personal', source, { scanIntervalMs: 10, retryDelayMs: 250 }, sessions, [environment])
+  let engine = new Engine(interrupted, 'personal', source, { scanIntervalMs: 10, retryDelayMs: 1000 }, sessions, [environment])
   t.after(async () => {
     await engine.effects.stop(); await engine.shutdown(); await sessions.close()
     await native.fiber.dispose(); await environment.close(); await storage.close()
